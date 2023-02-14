@@ -10,6 +10,7 @@ use halo2_base::{
     },
     utils::fs::gen_srs,
 };
+use rand::{rngs::StdRng, SeedableRng};
 use rand_core::OsRng;
 use std::{
     fs::{self, File},
@@ -99,11 +100,11 @@ fn random_msm_circuit(
     let builder = builder.into_inner().unwrap();
     let circuit = match stage {
         CircuitBuilderStage::Mock => {
-            builder.config(k, ZK.then_some(20));
+            builder.config(k, ZK.then_some(6));
             RangeCircuitBuilder::mock(builder)
         }
         CircuitBuilderStage::Keygen => {
-            builder.config(k, ZK.then_some(20));
+            builder.config(k, ZK.then_some(6));
             RangeCircuitBuilder::keygen(builder)
         }
         CircuitBuilderStage::Prover => RangeCircuitBuilder::prover(builder, break_points.unwrap()),
@@ -141,7 +142,7 @@ fn bench_msm() -> Result<(), Box<dyn std::error::Error>> {
         let bench_params: MSMCircuitParams = serde_json::from_str(line.unwrap().as_str()).unwrap();
         let k = bench_params.degree;
         println!("---------------------- degree = {k} ------------------------------",);
-        let rng = OsRng;
+        let rng = StdRng::from_seed([0u8; 32]);
 
         let params = gen_srs(k);
         println!("{bench_params:?}");

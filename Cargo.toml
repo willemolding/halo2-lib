@@ -30,8 +30,8 @@ debug = false
 debug-assertions = false
 lto = "fat" 
 # `codegen-units = 1` can lead to WORSE performance - always bench to find best profile for your machine!
-# codegen-units = 1
-panic = "unwind"
+codegen-units = 1
+panic = "abort"
 incremental = false
 
 # For performance profiling

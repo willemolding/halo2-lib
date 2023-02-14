@@ -107,6 +107,7 @@ impl<F: ScalarField> RangeConfig<F> {
             (1 << lookup_bits) <= config.gate.max_rows,
             "lookup table is too large for the circuit degree plus blinding factors!"
         );
+        dbg!(meta.blinding_factors::<ZK>());
 
         config
     }

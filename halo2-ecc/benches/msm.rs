@@ -16,7 +16,7 @@ use halo2_base::halo2_proofs::{
     transcript::{Blake2bWrite, Challenge255, TranscriptWriterBuffer},
 };
 use halo2_ecc::{bn254::FpChip, ecc::EccChip, fields::PrimeField};
-use rand::rngs::OsRng;
+use rand::{rngs::StdRng, SeedableRng};
 use std::sync::Mutex;
 
 use criterion::{criterion_group, criterion_main};
@@ -115,7 +115,7 @@ fn bench(c: &mut Criterion) {
     let config = TEST_CONFIG;
 
     let k = config.degree;
-    let mut rng = OsRng;
+    let mut rng = StdRng::from_seed([0u8; 32]);
     let circuit = msm_circuit(
         config,
         CircuitBuilderStage::Keygen,
@@ -156,7 +156,7 @@ fn bench(c: &mut Criterion) {
                     Blake2bWrite<Vec<u8>, G1Affine, Challenge255<_>>,
                     _,
                     ZK,
-                >(params, pk, &[circuit], &[&[]], &mut rng, &mut transcript)
+                >(params, pk, &[circuit], &[&[]], rng.clone(), &mut transcript)
                 .expect("prover should not fail");
             })
         },
