@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     halo2_proofs::{
-        circuit::{Layouter, Region, SimpleFloorPlanner, Value},
+        circuit::{self, Layouter, Region, SimpleFloorPlanner, Value},
         plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Selector},
     },
     utils::ScalarField,
@@ -15,6 +15,12 @@ use std::{cell::RefCell, collections::HashMap, iter};
 
 pub type ThreadBreakPoints = Vec<usize>;
 pub type MultiPhaseThreadBreakPoints = Vec<ThreadBreakPoints>;
+
+pub struct KeygenAssignments {
+    pub assigned_advices: HashMap<(usize, usize), (circuit::Cell, usize)>,
+    pub assigned_constants: HashMap<(usize, usize), circuit::Cell>,
+    pub break_points: MultiPhaseThreadBreakPoints,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct GateThreadBuilder<F: ScalarField> {
@@ -134,15 +140,13 @@ impl<F: ScalarField> GateThreadBuilder<F> {
         params
     }
 
-    /// Assigns all advice and fixed cells, turns on selectors, imposes equality constraints.
+    /// Assigns all advice and fixed cells, turns on selectors
     /// This should only be called during keygen.
     pub fn assign_all(
         &self,
         config: &FlexGateConfig<F>,
-        lookup_advice: &[Vec<Column<Advice>>],
-        q_lookup: &[Option<Selector>],
         region: &mut Region<F>,
-    ) -> MultiPhaseThreadBreakPoints {
+    ) -> KeygenAssignments {
         assert!(!self.witness_gen_only);
         let use_unknown = self.use_unknown;
         let max_rows = config.max_rows;
@@ -235,6 +239,20 @@ impl<F: ScalarField> GateThreadBuilder<F> {
             }
             break_points.push(break_point);
         }
+        KeygenAssignments { assigned_advices, assigned_constants, break_points }
+    }
+
+    /// Constrains all equalities and copies advice cells to special advice columns with lookup enabled.
+    /// This should only be called during keygen.
+    pub fn constrain_equalities_and_copy_lookups(
+        &self,
+        config: &FlexGateConfig<F>,
+        lookup_advice: &[Vec<Column<Advice>>],
+        q_lookup: &[Option<Selector>],
+        assigned_advices: &HashMap<(usize, usize), (circuit::Cell, usize)>,
+        assigned_constants: &HashMap<(usize, usize), circuit::Cell>,
+        region: &mut Region<F>,
+    ) {
         // We do equality constraints now that everything has been assigned to avoid cases where context `i` may reference cells in context `j` where `i < j`
         for (phase, threads) in self.threads.iter().enumerate() {
             let mut lookup_offset = 0;
@@ -267,12 +285,13 @@ impl<F: ScalarField> GateThreadBuilder<F> {
                         continue;
                     }
                     // otherwise, we copy the advice value to the special lookup_advice columns
-                    if lookup_offset >= max_rows {
+                    if lookup_offset >= config.max_rows {
                         lookup_offset = 0;
                         lookup_col += 1;
                     }
                     let value = advice.value;
-                    let value = if use_unknown { Value::unknown() } else { Value::known(value) };
+                    let value =
+                        if self.use_unknown { Value::unknown() } else { Value::known(value) };
                     let column = lookup_advice[phase][lookup_col];
 
                     #[cfg(feature = "halo2-axiom")]
@@ -292,7 +311,6 @@ impl<F: ScalarField> GateThreadBuilder<F> {
                 }
             }
         }
-        break_points
     }
 }
 
@@ -439,8 +457,17 @@ impl<F: ScalarField, const ZK: bool> Circuit<F> for GateCircuitBuilder<F, ZK> {
                             "GateCircuitBuilder only supports FirstPhase for now"
                         );
                     }
-                    *self.break_points.borrow_mut() =
-                        builder.assign_all(&config, &[], &[], &mut region);
+                    let KeygenAssignments { assigned_advices, assigned_constants, break_points } =
+                        builder.assign_all(&config, &mut region);
+                    builder.constrain_equalities_and_copy_lookups(
+                        &config,
+                        &[],
+                        &[],
+                        &assigned_advices,
+                        &assigned_constants,
+                        &mut region,
+                    );
+                    *self.break_points.borrow_mut() = break_points;
                 } else {
                     let builder = self.builder.take();
                     let break_points = self.break_points.take();
@@ -530,19 +557,24 @@ impl<F: ScalarField, const ZK: bool> Circuit<F> for RangeCircuitBuilder<F, ZK> {
                 // only support FirstPhase in this Builder because getting challenge value requires more specialized witness generation during synthesize
                 if !self.0.builder.borrow().witness_gen_only {
                     // clone the builder so we can re-use the circuit for both vk and pk gen
-                    let builder = self.0.builder.borrow().clone();
+                    let builder = self.0.builder.borrow();
                     for threads in builder.threads.iter().skip(1) {
                         assert!(
                             threads.is_empty(),
                             "GateCircuitBuilder only supports FirstPhase for now"
                         );
                     }
-                    *self.0.break_points.borrow_mut() = builder.assign_all(
+                    let KeygenAssignments { assigned_advices, assigned_constants, break_points } =
+                        builder.assign_all(&config.gate, &mut region);
+                    builder.constrain_equalities_and_copy_lookups(
                         &config.gate,
                         &config.lookup_advice,
                         &config.q_lookup,
+                        &assigned_advices,
+                        &assigned_constants,
                         &mut region,
                     );
+                    *self.0.break_points.borrow_mut() = break_points;
                 } else {
                     #[cfg(feature = "display")]
                     let start0 = std::time::Instant::now();
