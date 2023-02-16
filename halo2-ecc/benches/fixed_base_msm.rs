@@ -40,7 +40,7 @@ const BEST_100_CONFIG: MSMCircuitParams =
 
 const TEST_CONFIG: MSMCircuitParams = BEST_100_CONFIG;
 
-const ZK: bool = false;
+const ZK: bool = true;
 
 fn fixed_base_msm_bench(
     thread_pool: &Mutex<GateThreadBuilder<Fr>>,

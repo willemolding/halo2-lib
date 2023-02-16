@@ -139,7 +139,7 @@ fn test_range_multicolumn() {
     let mut builder = GateThreadBuilder::mock();
     range_tests(builder.main(0), 3, inputs, 8, 8);
 
-    const ZK: bool = false;
+    const ZK: bool = true;
     // auto-tune circuit
     builder.config(k, ZK.then_some(9));
     let circuit = RangeCircuitBuilder::<_, ZK>::mock(builder);

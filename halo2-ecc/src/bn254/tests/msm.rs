@@ -20,7 +20,7 @@ use std::{
 
 use super::*;
 
-const ZK: bool = false;
+const ZK: bool = true;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct MSMCircuitParams {

@@ -22,7 +22,7 @@ use pprof::criterion::{Output, PProfProfiler};
 // https://www.jibbow.com/posts/criterion-flamegraphs/
 
 const K: u32 = 9;
-const ZK: bool = false;
+const ZK: bool = true;
 
 fn mul_bench<F: ScalarField>(ctx: &mut Context<F>, inputs: [F; 2]) {
     let [a, b]: [_; 2] = ctx.assign_witnesses(inputs).try_into().unwrap();

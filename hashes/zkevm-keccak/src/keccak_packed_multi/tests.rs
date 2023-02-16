@@ -116,13 +116,13 @@ fn packed_multi_keccak_simple() {
         (0u8..136).collect::<Vec<_>>(),
         (0u8..200).collect::<Vec<_>>(),
     ];
-    const ZK: bool = false;
+    const ZK: bool = true;
     verify::<Fr, ZK>(k, inputs, true);
 }
 
 #[test]
 fn packed_multi_keccak_prover() {
-    const ZK: bool = false;
+    const ZK: bool = true;
     let _ = env_logger::builder().is_test(true).try_init();
 
     let k: u32 = var("KECCAK_DEGREE").unwrap_or_else(|_| "14".to_string()).parse().unwrap();

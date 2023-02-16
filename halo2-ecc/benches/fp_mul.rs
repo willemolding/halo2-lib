@@ -31,7 +31,7 @@ use pprof::criterion::{Output, PProfProfiler};
 // https://www.jibbow.com/posts/criterion-flamegraphs/
 
 const K: u32 = 19;
-const ZK: bool = false;
+const ZK: bool = true;
 
 fn fp_mul_bench<F: PrimeField>(
     ctx: &mut Context<F>,

@@ -20,7 +20,7 @@ use halo2_base::{
 };
 use rand_core::OsRng;
 
-const ZK: bool = false;
+const ZK: bool = true;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 struct PairingCircuitParams {

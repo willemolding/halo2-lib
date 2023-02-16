@@ -186,7 +186,7 @@ To optimize memory allocation to prioritize CPU utilization,
 we [tune jemallocator](https://github.com/jemalloc/jemalloc/blob/dev/TUNING.md) with
 
 ```bash
-export JEMALLOC_SYS_WITH_MALLOC_CONF="background_thread:true,metadata_thp:auto,dirty_decay_ms:1000000,muzzy_decay_ms:1000000,abort_conf:true"
+export JEMALLOC_SYS_WITH_MALLOC_CONF="background_thread:true,metadata_thp:auto,dirty_decay_ms:-1,muzzy_decay_ms:-1,abort_conf:true"
 ```
 
 (in practice this did not make a big difference).

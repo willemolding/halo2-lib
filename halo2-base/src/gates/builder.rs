@@ -11,7 +11,7 @@ use crate::{
     Context, SKIP_FIRST_PASS,
 };
 use serde::{Deserialize, Serialize};
-use std::{cell::RefCell, collections::HashMap};
+use std::{cell::RefCell, collections::HashMap, iter};
 
 pub type ThreadBreakPoints = Vec<usize>;
 pub type MultiPhaseThreadBreakPoints = Vec<ThreadBreakPoints>;
@@ -137,7 +137,7 @@ impl<F: ScalarField> GateThreadBuilder<F> {
     /// Assigns all advice and fixed cells, turns on selectors, imposes equality constraints.
     /// This should only be called during keygen.
     pub fn assign_all(
-        self,
+        &self,
         config: &FlexGateConfig<F>,
         lookup_advice: &[Vec<Column<Advice>>],
         q_lookup: &[Option<Selector>],
@@ -151,19 +151,22 @@ impl<F: ScalarField> GateThreadBuilder<F> {
         let mut assigned_constants = HashMap::new();
         let mut fixed_col = 0;
         let mut fixed_offset = 0;
-        for (phase, threads) in self.threads.into_iter().enumerate() {
+
+        // first, assign all advice cells
+        for (phase, threads) in self.threads.iter().enumerate() {
             let mut break_point = vec![];
             let mut gate_index = 0;
             let mut row_offset = 0;
-            let mut lookup_offset = 0;
-            let mut lookup_col = 0;
-            for mut ctx in threads {
+            for ctx in threads.iter() {
                 let mut basic_gate = config.basic_gates[phase]
                         .get(gate_index)
                         .unwrap_or_else(|| panic!("NOT ENOUGH ADVICE COLUMNS IN PHASE {phase}. Perhaps blinding factors were not taken into account. The max non-poisoned rows is {max_rows}"));
-                ctx.selector.resize(ctx.advice.len(), false);
 
-                for (i, (advice, q)) in ctx.advice.iter().zip(ctx.selector.into_iter()).enumerate()
+                for (i, (&advice, &q)) in ctx
+                    .advice
+                    .iter()
+                    .zip(ctx.selector.iter().chain(iter::repeat(&false)))
+                    .enumerate()
                 {
                     let column = basic_gate.value;
                     let value = if use_unknown { Value::unknown() } else { Value::known(advice) };
@@ -209,7 +212,7 @@ impl<F: ScalarField> GateThreadBuilder<F> {
 
                     row_offset += 1;
                 }
-                for (c, i) in ctx.constants.into_iter() {
+                for (&c, &i) in ctx.constants.iter() {
                     #[cfg(feature = "halo2-axiom")]
                     let cell = region.assign_fixed(config.constants[fixed_col], fixed_offset, c);
                     #[cfg(not(feature = "halo2-axiom"))]
@@ -229,10 +232,15 @@ impl<F: ScalarField> GateThreadBuilder<F> {
                         fixed_offset += 1;
                     }
                 }
-
-                // warning: currently we assume equality constraints in thread i only involves threads <= i
-                // I guess a fix is to just rerun this several times?
-                for (left, right) in ctx.advice_equality_constraints {
+            }
+            break_points.push(break_point);
+        }
+        // We do equality constraints now that everything has been assigned to avoid cases where context `i` may reference cells in context `j` where `i < j`
+        for (phase, threads) in self.threads.iter().enumerate() {
+            let mut lookup_offset = 0;
+            let mut lookup_col = 0;
+            for ctx in threads.iter() {
+                for (left, right) in ctx.advice_equality_constraints.iter() {
                     let (left, _) = assigned_advices[&(left.context_id, left.offset)];
                     let (right, _) = assigned_advices[&(right.context_id, right.offset)];
                     #[cfg(feature = "halo2-axiom")]
@@ -240,7 +248,7 @@ impl<F: ScalarField> GateThreadBuilder<F> {
                     #[cfg(not(feature = "halo2-axiom"))]
                     region.constrain_equal(left, right).unwrap();
                 }
-                for (left, right) in ctx.constant_equality_constraints {
+                for (left, right) in ctx.constant_equality_constraints.iter() {
                     let left = assigned_constants[&(left.context_id, left.offset)];
                     let (right, _) = assigned_advices[&(right.context_id, right.offset)];
                     #[cfg(feature = "halo2-axiom")]
@@ -249,7 +257,7 @@ impl<F: ScalarField> GateThreadBuilder<F> {
                     region.constrain_equal(left, right).unwrap();
                 }
 
-                for advice in ctx.cells_to_lookup {
+                for &advice in &ctx.cells_to_lookup {
                     // if q_lookup is Some, that means there should be a single advice column and it has lookup enabled
                     let cell = advice.cell.unwrap();
                     let (acell, row_offset) = assigned_advices[&(cell.context_id, cell.offset)];
@@ -283,7 +291,6 @@ impl<F: ScalarField> GateThreadBuilder<F> {
                     lookup_offset += 1;
                 }
             }
-            break_points.push(break_point);
         }
         break_points
     }
@@ -425,7 +432,7 @@ impl<F: ScalarField, const ZK: bool> Circuit<F> for GateCircuitBuilder<F, ZK> {
                 // only support FirstPhase in this Builder because getting challenge value requires more specialized witness generation during synthesize
                 if !self.builder.borrow().witness_gen_only {
                     // clone the builder so we can re-use the circuit for both vk and pk gen
-                    let builder = self.builder.borrow().clone();
+                    let builder = self.builder.borrow();
                     for threads in builder.threads.iter().skip(1) {
                         assert!(
                             threads.is_empty(),

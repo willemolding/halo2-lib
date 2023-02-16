@@ -35,7 +35,7 @@ use pprof::criterion::{Output, PProfProfiler};
 // https://www.jibbow.com/posts/criterion-flamegraphs/
 
 const K: u32 = 19;
-const ZK: bool = false;
+const ZK: bool = true;
 
 fn inner_prod_bench<F: ScalarField>(ctx: &mut Context<F>, a: Vec<F>, b: Vec<F>) {
     assert_eq!(a.len(), b.len());
