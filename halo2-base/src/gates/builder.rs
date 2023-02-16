@@ -29,7 +29,7 @@ pub struct KeygenAssignments {
     pub fixed_offset: usize,
 }
 
-pub struct ContextGuard<'a, F: ScalarField>(MutexGuard<'a, Vec<Context<F>>>);
+pub struct ContextGuard<'a, F: ScalarField>(pub MutexGuard<'a, Vec<Context<F>>>);
 
 impl<'a, F: ScalarField> ContextGuard<'a, F> {
     pub fn main(&mut self) -> &mut Context<F> {
