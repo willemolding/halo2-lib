@@ -81,7 +81,7 @@ fn random_ecdsa_circuit(
     stage: CircuitBuilderStage,
     break_points: Option<MultiPhaseThreadBreakPoints>,
 ) -> RangeCircuitBuilder<Fr, ZK> {
-    let mut builder = match stage {
+    let builder = match stage {
         CircuitBuilderStage::Mock => GateThreadBuilder::mock(),
         CircuitBuilderStage::Prover => GateThreadBuilder::prover(),
         CircuitBuilderStage::Keygen => GateThreadBuilder::keygen(),
@@ -100,7 +100,7 @@ fn random_ecdsa_circuit(
     let s = k_inv * (msg_hash + (r * sk));
 
     let start0 = start_timer!(|| format!("Witness generation for circuit in {stage:?} stage"));
-    ecdsa_test(builder.main(0), params, r, s, msg_hash, pubkey);
+    ecdsa_test(builder.get_threads(0).main(), params, r, s, msg_hash, pubkey);
 
     let circuit = match stage {
         CircuitBuilderStage::Mock => {

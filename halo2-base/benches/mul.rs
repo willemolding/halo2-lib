@@ -35,8 +35,8 @@ fn mul_bench<F: ScalarField>(ctx: &mut Context<F>, inputs: [F; 2]) {
 
 fn bench(c: &mut Criterion) {
     // create circuit for keygen
-    let mut builder = GateThreadBuilder::new(false);
-    mul_bench(builder.main(0), [Fr::zero(); 2]);
+    let builder = GateThreadBuilder::new(false);
+    mul_bench(builder.get_threads(0).main(), [Fr::zero(); 2]);
     builder.config(K as usize, Some(9));
     let circuit = GateCircuitBuilder::<_, ZK>::keygen(builder);
 
@@ -54,9 +54,9 @@ fn bench(c: &mut Criterion) {
         &(&params, &pk, [a, b]),
         |bencher, &(params, pk, inputs)| {
             bencher.iter(|| {
-                let mut builder = GateThreadBuilder::new(true);
+                let builder = GateThreadBuilder::new(true);
                 // do the computation
-                mul_bench(builder.main(0), inputs);
+                mul_bench(builder.get_threads(0).main(), inputs);
                 let circuit = GateCircuitBuilder::<_, ZK>::prover(builder, break_points.clone());
 
                 let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);

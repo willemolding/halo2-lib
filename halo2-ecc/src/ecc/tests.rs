@@ -57,8 +57,8 @@ fn test_ecc() {
     let P = G1Affine::random(OsRng);
     let Q = G1Affine::random(OsRng);
 
-    let mut builder = GateThreadBuilder::<Fr>::mock();
-    basic_g1_tests(builder.main(0), k - 1, 88, 3, P, Q);
+    let builder = GateThreadBuilder::<Fr>::mock();
+    basic_g1_tests(builder.get_threads(0).main(), k - 1, 88, 3, P, Q);
 
     builder.config(k, Some(20));
     let circuit = RangeCircuitBuilder::<_, ZK>::mock(builder);

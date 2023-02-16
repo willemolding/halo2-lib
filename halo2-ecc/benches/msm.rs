@@ -17,7 +17,6 @@ use halo2_base::halo2_proofs::{
 };
 use halo2_ecc::{bn254::FpChip, ecc::EccChip, fields::PrimeField};
 use rand::{rngs::StdRng, SeedableRng};
-use std::sync::Mutex;
 
 use criterion::{criterion_group, criterion_main};
 use criterion::{BenchmarkId, Criterion};
@@ -49,7 +48,7 @@ const TEST_CONFIG: MSMCircuitParams = BEST_100_CONFIG;
 const ZK: bool = true;
 
 fn msm_bench(
-    thread_pool: &Mutex<GateThreadBuilder<Fr>>,
+    thread_pool: &GateThreadBuilder<Fr>,
     params: MSMCircuitParams,
     bases: Vec<G1Affine>,
     scalars: Vec<Fr>,
@@ -59,13 +58,13 @@ fn msm_bench(
     let fp_chip = FpChip::<Fr>::new(&range, params.limb_bits, params.num_limbs);
     let ecc_chip = EccChip::new(&fp_chip);
 
-    let mut builder = thread_pool.lock().unwrap();
-    let ctx = builder.main(0);
+    let mut threads = thread_pool.get_threads(0);
+    let ctx = threads.main();
     let scalars_assigned =
         scalars.iter().map(|scalar| vec![ctx.load_witness(*scalar)]).collect::<Vec<_>>();
     let bases_assigned =
         bases.iter().map(|base| ecc_chip.load_private(ctx, (base.x, base.y))).collect::<Vec<_>>();
-    drop(builder);
+    drop(threads);
 
     ecc_chip.variable_base_msm_in::<G1Affine>(
         thread_pool,
@@ -91,11 +90,9 @@ fn msm_circuit(
         CircuitBuilderStage::Prover => GateThreadBuilder::prover(),
         CircuitBuilderStage::Keygen => GateThreadBuilder::keygen(),
     };
-    let builder = Mutex::new(builder);
 
     msm_bench(&builder, params, bases, scalars);
 
-    let builder = builder.into_inner().unwrap();
     let circuit = match stage {
         CircuitBuilderStage::Mock => {
             builder.config(k, ZK.then_some(20));

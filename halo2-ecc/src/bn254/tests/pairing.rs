@@ -63,7 +63,7 @@ fn random_pairing_circuit(
     break_points: Option<MultiPhaseThreadBreakPoints>,
 ) -> RangeCircuitBuilder<Fr, ZK> {
     let k = params.degree as usize;
-    let mut builder = match stage {
+    let builder = match stage {
         CircuitBuilderStage::Mock => GateThreadBuilder::mock(),
         CircuitBuilderStage::Prover => GateThreadBuilder::prover(),
         CircuitBuilderStage::Keygen => GateThreadBuilder::keygen(),
@@ -73,7 +73,7 @@ fn random_pairing_circuit(
     let Q = G2Affine::random(OsRng);
 
     let start0 = start_timer!(|| format!("Witness generation for circuit in {stage:?} stage"));
-    pairing_test::<Fr>(builder.main(0), params, P, Q);
+    pairing_test::<Fr>(builder.get_threads(0).main(), params, P, Q);
 
     let circuit = match stage {
         CircuitBuilderStage::Mock => {

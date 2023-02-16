@@ -48,8 +48,8 @@ fn inner_prod_bench<F: ScalarField>(ctx: &mut Context<F>, a: Vec<F>, b: Vec<F>) 
 fn bench(c: &mut Criterion) {
     let k = 19u32;
     // create circuit for keygen
-    let mut builder = GateThreadBuilder::new(false);
-    inner_prod_bench(builder.main(0), vec![Fr::zero(); 5], vec![Fr::zero(); 5]);
+    let builder = GateThreadBuilder::new(false);
+    inner_prod_bench(builder.get_threads(0).main(), vec![Fr::zero(); 5], vec![Fr::zero(); 5]);
     builder.config(k as usize, Some(20));
     let circuit = GateCircuitBuilder::<_, ZK>::mock(builder);
 
@@ -70,10 +70,10 @@ fn bench(c: &mut Criterion) {
         &(&params, &pk),
         |bencher, &(params, pk)| {
             bencher.iter(|| {
-                let mut builder = GateThreadBuilder::new(true);
+                let builder = GateThreadBuilder::new(true);
                 let a = (0..5).map(|_| Fr::random(OsRng)).collect_vec();
                 let b = (0..5).map(|_| Fr::random(OsRng)).collect_vec();
-                inner_prod_bench(builder.main(0), a, b);
+                inner_prod_bench(builder.get_threads(0).main(), a, b);
                 let circuit = GateCircuitBuilder::<_, ZK>::prover(builder, break_points.clone());
 
                 let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);

@@ -11,7 +11,11 @@ use crate::{
     Context, SKIP_FIRST_PASS,
 };
 use serde::{Deserialize, Serialize};
-use std::{cell::RefCell, collections::HashMap, iter};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, MutexGuard,
+};
+use std::{cell::RefCell, collections::HashMap, iter, sync::Mutex};
 
 pub type ThreadBreakPoints = Vec<usize>;
 pub type MultiPhaseThreadBreakPoints = Vec<ThreadBreakPoints>;
@@ -20,23 +24,49 @@ pub struct KeygenAssignments {
     pub assigned_advices: HashMap<(usize, usize), (circuit::Cell, usize)>,
     pub assigned_constants: HashMap<(usize, usize), circuit::Cell>,
     pub break_points: MultiPhaseThreadBreakPoints,
+    /// The last location of the dynamic constant assignments
+    pub fixed_col: usize,
+    pub fixed_offset: usize,
+}
+
+pub struct ContextGuard<'a, F: ScalarField>(MutexGuard<'a, Vec<Context<F>>>);
+
+impl<'a, F: ScalarField> ContextGuard<'a, F> {
+    pub fn main(&mut self) -> &mut Context<F> {
+        self.0.last_mut().unwrap()
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct GateThreadBuilder<F: ScalarField> {
     /// Threads for each challenge phase
-    pub threads: [Vec<Context<F>>; MAX_PHASE],
-    thread_count: usize,
+    // TODO: do we want RwLock?
+    // need Arc so we can clone GateThreadBuilder, required for later RefCell usage in circuit
+    pub threads: [Arc<Mutex<Vec<Context<F>>>>; MAX_PHASE],
+    thread_count: Arc<AtomicUsize>,
     witness_gen_only: bool,
     use_unknown: bool,
 }
 
 impl<F: ScalarField> GateThreadBuilder<F> {
     pub fn new(witness_gen_only: bool) -> Self {
-        let mut threads = [(); MAX_PHASE].map(|_| vec![]);
-        // start with a main thread in phase 0
-        threads[0].push(Context::new(witness_gen_only, 0));
-        Self { threads, thread_count: 1, witness_gen_only, use_unknown: false }
+        let threads: [_; MAX_PHASE] = (0..MAX_PHASE)
+            .map(|i| {
+                Arc::new(Mutex::new(if i == 0 {
+                    vec![Context::new(witness_gen_only, 0)]
+                } else {
+                    Vec::new()
+                }))
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        Self {
+            threads,
+            thread_count: Arc::new(AtomicUsize::new(1)),
+            witness_gen_only,
+            use_unknown: false,
+        }
     }
 
     pub fn mock() -> Self {
@@ -55,14 +85,6 @@ impl<F: ScalarField> GateThreadBuilder<F> {
         Self { use_unknown, ..self }
     }
 
-    pub fn main(&mut self, phase: usize) -> &mut Context<F> {
-        if self.threads[phase].is_empty() {
-            self.new_thread(phase)
-        } else {
-            self.threads[phase].last_mut().unwrap()
-        }
-    }
-
     pub fn witness_gen_only(&self) -> bool {
         self.witness_gen_only
     }
@@ -72,20 +94,20 @@ impl<F: ScalarField> GateThreadBuilder<F> {
     }
 
     pub fn thread_count(&self) -> usize {
-        self.thread_count
+        self.thread_count.load(Ordering::SeqCst)
     }
 
-    pub fn get_new_thread_id(&mut self) -> usize {
-        let thread_id = self.thread_count;
-        self.thread_count += 1;
-        thread_id
+    pub fn get_new_thread_id(&self) -> usize {
+        self.thread_count.fetch_add(1, Ordering::SeqCst)
     }
 
-    pub fn new_thread(&mut self, phase: usize) -> &mut Context<F> {
-        let thread_id = self.thread_count;
-        self.thread_count += 1;
-        self.threads[phase].push(Context::new(self.witness_gen_only, thread_id));
-        self.threads[phase].last_mut().unwrap()
+    pub fn new_thread(&self, phase: usize) {
+        let thread_id = self.get_new_thread_id();
+        self.threads[phase].lock().unwrap().push(Context::new(self.witness_gen_only, thread_id));
+    }
+
+    pub fn get_threads(&self, phase: usize) -> ContextGuard<'_, F> {
+        ContextGuard(self.threads[phase].lock().unwrap())
     }
 
     /// Auto-calculate configuration parameters for the circuit
@@ -94,7 +116,9 @@ impl<F: ScalarField> GateThreadBuilder<F> {
         let total_advice_per_phase = self
             .threads
             .iter()
-            .map(|threads| threads.iter().map(|ctx| ctx.advice.len()).sum::<usize>())
+            .map(|threads| {
+                threads.lock().unwrap().iter().map(|ctx| ctx.advice.len()).sum::<usize>()
+            })
             .collect::<Vec<_>>();
         // we do a rough estimate by taking ceil(advice_cells_per_phase / 2^k )
         // if this is too small, manual configuration will be needed
@@ -106,7 +130,9 @@ impl<F: ScalarField> GateThreadBuilder<F> {
         let total_lookup_advice_per_phase = self
             .threads
             .iter()
-            .map(|threads| threads.iter().map(|ctx| ctx.cells_to_lookup.len()).sum::<usize>())
+            .map(|threads| {
+                threads.lock().unwrap().iter().map(|ctx| ctx.cells_to_lookup.len()).sum::<usize>()
+            })
             .collect::<Vec<_>>();
         let num_lookup_advice_per_phase = total_lookup_advice_per_phase
             .iter()
@@ -116,7 +142,9 @@ impl<F: ScalarField> GateThreadBuilder<F> {
         let total_fixed: usize = self
             .threads
             .iter()
-            .map(|threads| threads.iter().map(|ctx| ctx.constants.len()).sum::<usize>())
+            .map(|threads| {
+                threads.lock().unwrap().iter().map(|ctx| ctx.constants.len()).sum::<usize>()
+            })
             .sum();
         let num_fixed = (total_fixed + (1 << k) - 1) >> k;
 
@@ -165,7 +193,7 @@ impl<F: ScalarField> GateThreadBuilder<F> {
             let mut break_point = vec![];
             let mut gate_index = 0;
             let mut row_offset = 0;
-            for ctx in threads.iter() {
+            for ctx in threads.lock().unwrap().iter() {
                 let mut basic_gate = config.basic_gates[phase]
                         .get(gate_index)
                         .unwrap_or_else(|| panic!("NOT ENOUGH ADVICE COLUMNS IN PHASE {phase}. Perhaps blinding factors were not taken into account. The max non-poisoned rows is {max_rows}"));
@@ -243,7 +271,13 @@ impl<F: ScalarField> GateThreadBuilder<F> {
             }
             break_points.push(break_point);
         }
-        KeygenAssignments { assigned_advices, assigned_constants, break_points }
+        KeygenAssignments {
+            assigned_advices,
+            assigned_constants,
+            break_points,
+            fixed_col,
+            fixed_offset,
+        }
     }
 
     /// Constrains all equalities and copies advice cells to special advice columns with lookup enabled.
@@ -261,7 +295,7 @@ impl<F: ScalarField> GateThreadBuilder<F> {
         for (phase, threads) in self.threads.iter().enumerate() {
             let mut lookup_offset = 0;
             let mut lookup_col = 0;
-            for ctx in threads.iter() {
+            for ctx in threads.lock().unwrap().iter() {
                 for (left, right) in ctx.advice_equality_constraints.iter() {
                     let (left, _) = assigned_advices[&(left.context_id, left.offset)];
                     let (right, _) = assigned_advices[&(right.context_id, right.offset)];
@@ -398,24 +432,24 @@ pub struct FlexGateConfigParams {
 /// A wrapper struct to auto-build a circuit from a `GateThreadBuilder`.
 #[derive(Clone, Debug)]
 pub struct GateCircuitBuilder<F: ScalarField, const ZK: bool> {
-    pub builder: RefCell<GateThreadBuilder<F>>, // `RefCell` is just to trick circuit `synthesize` to take ownership of the inner builder
+    pub builder: GateThreadBuilder<F>,
     pub break_points: RefCell<MultiPhaseThreadBreakPoints>, // `RefCell` allows the circuit to record break points in a keygen call of `synthesize` for use in later witness gen
 }
 
 impl<F: ScalarField, const ZK: bool> GateCircuitBuilder<F, ZK> {
     pub fn keygen(builder: GateThreadBuilder<F>) -> Self {
-        Self { builder: RefCell::new(builder.unknown(true)), break_points: RefCell::new(vec![]) }
+        Self { builder: builder.unknown(true), break_points: RefCell::new(vec![]) }
     }
 
     pub fn mock(builder: GateThreadBuilder<F>) -> Self {
-        Self { builder: RefCell::new(builder.unknown(false)), break_points: RefCell::new(vec![]) }
+        Self { builder: builder.unknown(false), break_points: RefCell::new(vec![]) }
     }
 
     pub fn prover(
         builder: GateThreadBuilder<F>,
         break_points: MultiPhaseThreadBreakPoints,
     ) -> Self {
-        Self { builder: RefCell::new(builder), break_points: RefCell::new(break_points) }
+        Self { builder, break_points: RefCell::new(break_points) }
     }
 }
 
@@ -452,17 +486,22 @@ impl<F: ScalarField, const ZK: bool> Circuit<F> for GateCircuitBuilder<F, ZK> {
                     return Ok(());
                 }
                 // only support FirstPhase in this Builder because getting challenge value requires more specialized witness generation during synthesize
-                if !self.builder.borrow().witness_gen_only {
+                if !self.builder.witness_gen_only {
                     // clone the builder so we can re-use the circuit for both vk and pk gen
-                    let builder = self.builder.borrow();
+                    let builder = &self.builder;
                     for threads in builder.threads.iter().skip(1) {
                         assert!(
-                            threads.is_empty(),
+                            threads.lock().unwrap().is_empty(),
                             "GateCircuitBuilder only supports FirstPhase for now"
                         );
                     }
-                    let KeygenAssignments { assigned_advices, assigned_constants, break_points } =
-                        builder.assign_all(&config, &mut region);
+                    let KeygenAssignments {
+                        assigned_advices,
+                        assigned_constants,
+                        break_points,
+                        fixed_col: _,
+                        fixed_offset: _,
+                    } = builder.assign_all(&config, &mut region);
                     builder.constrain_equalities_and_copy_lookups(
                         &config,
                         &[],
@@ -473,15 +512,27 @@ impl<F: ScalarField, const ZK: bool> Circuit<F> for GateCircuitBuilder<F, ZK> {
                     );
                     *self.break_points.borrow_mut() = break_points;
                 } else {
-                    let builder = self.builder.take();
                     let break_points = self.break_points.take();
-                    for (phase, (threads, break_points)) in builder
+
+                    for (phase, (threads, break_points)) in self
+                        .builder
                         .threads
-                        .into_iter()
+                        .iter()
                         .zip(break_points.into_iter())
                         .enumerate()
                         .take(1)
                     {
+                        // below is just a way to get the inner from Arc, assuming at this point there are no threads still using builder
+                        let mut threads = Arc::clone(threads);
+                        unsafe {
+                            let ptr = Arc::into_raw(threads);
+                            threads = Arc::from_raw(ptr);
+                            while Arc::strong_count(&threads) > 1 {
+                                Arc::decrement_strong_count(ptr);
+                            }
+                        };
+                        let threads = Arc::try_unwrap(threads).unwrap();
+                        let threads = threads.into_inner().unwrap();
                         assign_threads_in(phase, threads, &config, &[], &mut region, break_points);
                     }
                 }
@@ -559,17 +610,22 @@ impl<F: ScalarField, const ZK: bool> Circuit<F> for RangeCircuitBuilder<F, ZK> {
                     return Ok(());
                 }
                 // only support FirstPhase in this Builder because getting challenge value requires more specialized witness generation during synthesize
-                if !self.0.builder.borrow().witness_gen_only {
+                if !self.0.builder.witness_gen_only {
                     // clone the builder so we can re-use the circuit for both vk and pk gen
-                    let builder = self.0.builder.borrow();
+                    let builder = &self.0.builder;
                     for threads in builder.threads.iter().skip(1) {
                         assert!(
-                            threads.is_empty(),
+                            threads.lock().unwrap().is_empty(),
                             "GateCircuitBuilder only supports FirstPhase for now"
                         );
                     }
-                    let KeygenAssignments { assigned_advices, assigned_constants, break_points } =
-                        builder.assign_all(&config.gate, &mut region);
+                    let KeygenAssignments {
+                        assigned_advices,
+                        assigned_constants,
+                        break_points,
+                        fixed_col: _,
+                        fixed_offset: _,
+                    } = builder.assign_all(&config.gate, &mut region);
                     builder.constrain_equalities_and_copy_lookups(
                         &config.gate,
                         &config.lookup_advice,
@@ -582,15 +638,27 @@ impl<F: ScalarField, const ZK: bool> Circuit<F> for RangeCircuitBuilder<F, ZK> {
                 } else {
                     #[cfg(feature = "display")]
                     let start0 = std::time::Instant::now();
-                    let builder = self.0.builder.take();
                     let break_points = self.0.break_points.take();
-                    for (phase, (threads, break_points)) in builder
+                    for (phase, (threads, break_points)) in self
+                        .0
+                        .builder
                         .threads
-                        .into_iter()
+                        .iter()
                         .zip(break_points.into_iter())
                         .enumerate()
                         .take(1)
                     {
+                        // below is just a way to get the inner from Arc, assuming at this point there are no threads still using builder
+                        let mut threads = Arc::clone(threads);
+                        unsafe {
+                            let ptr = Arc::into_raw(threads);
+                            threads = Arc::from_raw(ptr);
+                            while Arc::strong_count(&threads) > 1 {
+                                Arc::decrement_strong_count(ptr);
+                            }
+                        };
+                        let threads = Arc::try_unwrap(threads).unwrap();
+                        let threads = threads.into_inner().unwrap();
                         assign_threads_in(
                             phase,
                             threads,

@@ -44,8 +44,8 @@ mod fp {
         let a = Fq::random(OsRng);
         let b = Fq::random(OsRng);
 
-        let mut builder = GateThreadBuilder::<Fr>::mock();
-        fp_mul_test(builder.main(0), k - 1, 88, 3, a, b);
+        let builder = GateThreadBuilder::<Fr>::mock();
+        fp_mul_test(builder.get_threads(0).main(), k - 1, 88, 3, a, b);
 
         builder.config(k, Some(10));
         let circuit = RangeCircuitBuilder::<_, ZK>::mock(builder);
@@ -121,8 +121,8 @@ mod fp12 {
         let a = Fq12::random(OsRng);
         let b = Fq12::random(OsRng);
 
-        let mut builder = GateThreadBuilder::<Fr>::mock();
-        fp12_mul_test(builder.main(0), k - 1, 88, 3, a, b);
+        let builder = GateThreadBuilder::<Fr>::mock();
+        fp12_mul_test(builder.get_threads(0).main(), k - 1, 88, 3, a, b);
 
         builder.config(k, Some(20));
         let circuit = RangeCircuitBuilder::<_, ZK>::mock(builder);

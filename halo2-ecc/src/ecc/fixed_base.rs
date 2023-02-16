@@ -14,7 +14,6 @@ use halo2_base::{
 };
 use itertools::Itertools;
 use rayon::prelude::*;
-use std::sync::Mutex;
 use std::{cmp::min, marker::PhantomData};
 
 // this only works for curves GA with base field of prime order
@@ -230,8 +229,7 @@ where
         .chunks(cached_points.len() / points.len())
         .zip(bits.chunks(total_bits))
         .map(|(cached_points, bits)| {
-            let cached_point_window_rev =
-                cached_points.chunks(1usize << window_bits).rev();
+            let cached_point_window_rev = cached_points.chunks(1usize << window_bits).rev();
             let bit_window_rev = bits.chunks(window_bits).rev();
             let mut curr_point = None;
             // `is_started` is just a way to deal with if `curr_point` is actually identity
@@ -265,7 +263,7 @@ where
 
 pub fn msm_par<F, FC, C>(
     chip: &EccChip<F, FC>,
-    thread_pool: &Mutex<GateThreadBuilder<F>>,
+    thread_pool: &GateThreadBuilder<F>,
     points: &[C],
     scalars: Vec<Vec<AssignedValue<F>>>,
     max_scalar_bits_per_cell: usize,
@@ -316,13 +314,13 @@ where
     C::Curve::batch_normalize(&cached_points_jacobian, &mut cached_points_affine);
 
     let field_chip = chip.field_chip();
-    let witness_gen_only = thread_pool.lock().unwrap().witness_gen_only();
+    let witness_gen_only = thread_pool.witness_gen_only();
 
     let (new_threads, scalar_mults): (Vec<_>, Vec<_>) = cached_points_affine
         .par_chunks(cached_points_affine.len() / points.len())
         .zip(scalars.into_par_iter())
         .map(|(cached_points, scalar)| {
-            let thread_id = thread_pool.lock().unwrap().get_new_thread_id();
+            let thread_id = thread_pool.get_new_thread_id();
             // thread_pool should be unlocked now
             let mut thread = Context::new(witness_gen_only, thread_id);
             let ctx = &mut thread;
@@ -376,8 +374,6 @@ where
             (thread, curr_point.unwrap())
         })
         .unzip();
-    let mut builder = thread_pool.lock().unwrap();
-    builder.threads[phase].extend(new_threads);
-    let ctx = builder.main(phase);
-    chip.sum::<C>(ctx, scalar_mults.iter())
+    thread_pool.threads[phase].lock().unwrap().extend(new_threads);
+    chip.sum::<C>(thread_pool.get_threads(phase).main(), scalar_mults.iter())
 }

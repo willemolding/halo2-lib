@@ -58,14 +58,14 @@ fn fp_mul_circuit(
     break_points: Option<MultiPhaseThreadBreakPoints>,
 ) -> RangeCircuitBuilder<Fr, ZK> {
     let k = K as usize;
-    let mut builder = match stage {
+    let builder = match stage {
         CircuitBuilderStage::Mock => GateThreadBuilder::mock(),
         CircuitBuilderStage::Prover => GateThreadBuilder::prover(),
         CircuitBuilderStage::Keygen => GateThreadBuilder::keygen(),
     };
 
     let start0 = start_timer!(|| format!("Witness generation for circuit in {stage:?} stage"));
-    fp_mul_bench(builder.main(0), k - 1, 88, 3, a, b);
+    fp_mul_bench(builder.get_threads(0).main(), k - 1, 88, 3, a, b);
 
     let circuit = match stage {
         CircuitBuilderStage::Mock => {

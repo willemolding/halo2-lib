@@ -57,8 +57,8 @@ fn test_ec_add() {
     let k = params.degree;
     let points = (0..params.batch_size).map(|_| G2Affine::random(OsRng)).collect_vec();
 
-    let mut builder = GateThreadBuilder::<Fr>::mock();
-    g2_add_test(builder.main(0), params, points);
+    let builder = GateThreadBuilder::<Fr>::mock();
+    g2_add_test(builder.get_threads(0).main(), params, points);
 
     builder.config(k as usize, Some(20));
     let circuit = RangeCircuitBuilder::<_, ZK>::mock(builder);
@@ -91,8 +91,8 @@ fn bench_ec_add() -> Result<(), Box<dyn std::error::Error>> {
         let start0 = start_timer!(|| "Witness generation for empty circuit");
         let circuit = {
             let points = vec![G2Affine::generator(); bench_params.batch_size];
-            let mut builder = GateThreadBuilder::<Fr>::keygen();
-            g2_add_test(builder.main(0), bench_params, points);
+            let builder = GateThreadBuilder::<Fr>::keygen();
+            g2_add_test(builder.get_threads(0).main(), bench_params, points);
             builder.config(k as usize, Some(20));
             RangeCircuitBuilder::<_, ZK>::keygen(builder)
         };
@@ -112,8 +112,8 @@ fn bench_ec_add() -> Result<(), Box<dyn std::error::Error>> {
         let points = (0..bench_params.batch_size).map(|_| G2Affine::random(&mut rng)).collect_vec();
         let proof_time = start_timer!(|| "Proving time");
         let proof_circuit = {
-            let mut builder = GateThreadBuilder::<Fr>::prover();
-            g2_add_test(builder.main(0), bench_params, points);
+            let builder = GateThreadBuilder::<Fr>::prover();
+            g2_add_test(builder.get_threads(0).main(), bench_params, points);
             builder.config(k as usize, Some(20));
             RangeCircuitBuilder::<_, ZK>::prover(builder, break_points)
         };
