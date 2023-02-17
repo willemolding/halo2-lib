@@ -8,21 +8,24 @@ use crate::{
         plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Selector},
     },
     utils::ScalarField,
-    Context, SKIP_FIRST_PASS,
+    Context, ContextCell, SKIP_FIRST_PASS,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc, MutexGuard,
-};
 use std::{cell::RefCell, collections::HashMap, iter, sync::Mutex};
+use std::{
+    collections::HashSet,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, MutexGuard,
+    },
+};
 
 pub type ThreadBreakPoints = Vec<usize>;
 pub type MultiPhaseThreadBreakPoints = Vec<ThreadBreakPoints>;
 
-pub struct KeygenAssignments {
-    pub assigned_advices: HashMap<(usize, usize), (circuit::Cell, usize)>,
-    pub assigned_constants: HashMap<(usize, usize), circuit::Cell>,
+pub struct KeygenAssignments<F: ScalarField> {
+    pub assigned_advices: HashMap<ContextCell, (circuit::Cell, usize)>,
+    pub assigned_constants: HashMap<F, circuit::Cell>,
     pub break_points: MultiPhaseThreadBreakPoints,
     /// The last location of the dynamic constant assignments
     pub fixed_col: usize,
@@ -139,13 +142,15 @@ impl<F: ScalarField> GateThreadBuilder<F> {
             .map(|count| (count + max_rows - 1) / max_rows)
             .collect::<Vec<_>>();
 
-        let total_fixed: usize = self
-            .threads
-            .iter()
-            .map(|threads| {
-                threads.lock().unwrap().iter().map(|ctx| ctx.constants.len()).sum::<usize>()
-            })
-            .sum();
+        let total_fixed: usize = HashSet::<F>::from_iter(self.threads.iter().flat_map(|threads| {
+            threads
+                .lock()
+                .unwrap()
+                .iter()
+                .flat_map(|ctx| ctx.constant_equality_constraints.iter().map(|(c, _)| *c))
+                .collect::<Vec<_>>()
+        }))
+        .len();
         let num_fixed = (total_fixed + (1 << k) - 1) >> k;
 
         let params = FlexGateConfigParams {
@@ -178,7 +183,7 @@ impl<F: ScalarField> GateThreadBuilder<F> {
         &self,
         config: &FlexGateConfig<F>,
         region: &mut Region<F>,
-    ) -> KeygenAssignments {
+    ) -> KeygenAssignments<F> {
         assert!(!self.witness_gen_only);
         let use_unknown = self.use_unknown;
         let max_rows = config.max_rows;
@@ -211,7 +216,9 @@ impl<F: ScalarField> GateThreadBuilder<F> {
                     #[cfg(not(feature = "halo2-axiom"))]
                     let cell =
                         region.assign_advice(|| "", column, row_offset, || value).unwrap().cell();
-                    assigned_advices.insert((ctx.context_id, i), (cell, row_offset));
+                    // `cell` in fact contains row_offset, but is inaccessible in the halo2-pse api, so we include it in the hashmap
+                    assigned_advices
+                        .insert(ContextCell::new(ctx.context_id, i), (cell, row_offset));
 
                     if (q && row_offset + 4 > max_rows) || row_offset >= max_rows - 1 {
                         break_point.push(row_offset);
@@ -248,24 +255,27 @@ impl<F: ScalarField> GateThreadBuilder<F> {
 
                     row_offset += 1;
                 }
-                for (&c, &i) in ctx.constants.iter() {
-                    #[cfg(feature = "halo2-axiom")]
-                    let cell = region.assign_fixed(config.constants[fixed_col], fixed_offset, c);
-                    #[cfg(not(feature = "halo2-axiom"))]
-                    let cell = region
-                        .assign_fixed(
-                            || "",
-                            config.constants[fixed_col],
-                            fixed_offset,
-                            || Value::known(c),
-                        )
-                        .unwrap()
-                        .cell();
-                    assigned_constants.insert((ctx.context_id, i), cell);
-                    fixed_col += 1;
-                    if fixed_col >= config.constants.len() {
-                        fixed_col = 0;
-                        fixed_offset += 1;
+                for (c, _) in ctx.constant_equality_constraints.iter() {
+                    if assigned_constants.get(c).is_none() {
+                        #[cfg(feature = "halo2-axiom")]
+                        let cell =
+                            region.assign_fixed(config.constants[fixed_col], fixed_offset, *c);
+                        #[cfg(not(feature = "halo2-axiom"))]
+                        let cell = region
+                            .assign_fixed(
+                                || "",
+                                config.constants[fixed_col],
+                                fixed_offset,
+                                || Value::known(*c),
+                            )
+                            .unwrap()
+                            .cell();
+                        assigned_constants.insert(*c, cell);
+                        fixed_col += 1;
+                        if fixed_col >= config.constants.len() {
+                            fixed_col = 0;
+                            fixed_offset += 1;
+                        }
                     }
                 }
             }
@@ -287,8 +297,8 @@ impl<F: ScalarField> GateThreadBuilder<F> {
         config: &FlexGateConfig<F>,
         lookup_advice: &[Vec<Column<Advice>>],
         q_lookup: &[Option<Selector>],
-        assigned_advices: &HashMap<(usize, usize), (circuit::Cell, usize)>,
-        assigned_constants: &HashMap<(usize, usize), circuit::Cell>,
+        assigned_advices: &HashMap<ContextCell, (circuit::Cell, usize)>,
+        assigned_constants: &HashMap<F, circuit::Cell>,
         region: &mut Region<F>,
     ) {
         // We do equality constraints now that everything has been assigned to avoid cases where context `i` may reference cells in context `j` where `i < j`
@@ -297,18 +307,19 @@ impl<F: ScalarField> GateThreadBuilder<F> {
             let mut lookup_col = 0;
             for ctx in threads.lock().unwrap().iter() {
                 for (left, right) in ctx.advice_equality_constraints.iter() {
-                    let (left, _) = assigned_advices[&(left.context_id, left.offset)];
-                    let (right, _) = assigned_advices[&(right.context_id, right.offset)];
+                    let (left, _) = assigned_advices[left];
+                    let (right, _) = assigned_advices[right];
                     #[cfg(feature = "halo2-axiom")]
                     region.constrain_equal(&left, &right);
                     #[cfg(not(feature = "halo2-axiom"))]
                     region.constrain_equal(left, right).unwrap();
                 }
-                for (left, right) in ctx.constant_equality_constraints.iter() {
-                    let left = assigned_constants[&(left.context_id, left.offset)];
-                    let (right, _) = assigned_advices[&(right.context_id, right.offset)];
+                for (c, right) in ctx.constant_equality_constraints.iter() {
+                    let left = assigned_constants.get(c).expect("constant should be assigned");
+                    let (right, _) =
+                        assigned_advices.get(right).expect("advice should be assigned");
                     #[cfg(feature = "halo2-axiom")]
-                    region.constrain_equal(&left, &right);
+                    region.constrain_equal(left, right);
                     #[cfg(not(feature = "halo2-axiom"))]
                     region.constrain_equal(left, right).unwrap();
                 }
@@ -316,7 +327,7 @@ impl<F: ScalarField> GateThreadBuilder<F> {
                 for &advice in &ctx.cells_to_lookup {
                     // if q_lookup is Some, that means there should be a single advice column and it has lookup enabled
                     let cell = advice.cell.unwrap();
-                    let (acell, row_offset) = assigned_advices[&(cell.context_id, cell.offset)];
+                    let (acell, row_offset) = assigned_advices[&cell];
                     if let Some(q_lookup) = q_lookup[phase] {
                         assert_eq!(config.basic_gates[phase].len(), 1);
                         q_lookup.enable(region, row_offset).unwrap();
@@ -522,17 +533,7 @@ impl<F: ScalarField, const ZK: bool> Circuit<F> for GateCircuitBuilder<F, ZK> {
                         .enumerate()
                         .take(1)
                     {
-                        // below is just a way to get the inner from Arc, assuming at this point there are no threads still using builder
-                        let mut threads = Arc::clone(threads);
-                        unsafe {
-                            let ptr = Arc::into_raw(threads);
-                            threads = Arc::from_raw(ptr);
-                            while Arc::strong_count(&threads) > 1 {
-                                Arc::decrement_strong_count(ptr);
-                            }
-                        };
-                        let threads = Arc::try_unwrap(threads).unwrap();
-                        let threads = threads.into_inner().unwrap();
+                        let threads = take_threads(threads);
                         assign_threads_in(phase, threads, &config, &[], &mut region, break_points);
                     }
                 }
@@ -540,6 +541,12 @@ impl<F: ScalarField, const ZK: bool> Circuit<F> for GateCircuitBuilder<F, ZK> {
             },
         )
     }
+}
+
+fn take_threads<F: ScalarField>(threads: &Arc<Mutex<Vec<Context<F>>>>) -> Vec<Context<F>> {
+    let mut threads = threads.lock().unwrap();
+    let threads: Vec<_> = std::mem::take(&mut threads);
+    threads
 }
 
 /// A wrapper struct to auto-build a circuit from a `GateThreadBuilder`.
@@ -649,16 +656,7 @@ impl<F: ScalarField, const ZK: bool> Circuit<F> for RangeCircuitBuilder<F, ZK> {
                         .take(1)
                     {
                         // below is just a way to get the inner from Arc, assuming at this point there are no threads still using builder
-                        let mut threads = Arc::clone(threads);
-                        unsafe {
-                            let ptr = Arc::into_raw(threads);
-                            threads = Arc::from_raw(ptr);
-                            while Arc::strong_count(&threads) > 1 {
-                                Arc::decrement_strong_count(ptr);
-                            }
-                        };
-                        let threads = Arc::try_unwrap(threads).unwrap();
-                        let threads = threads.into_inner().unwrap();
+                        let threads = take_threads(threads);
                         assign_threads_in(
                             phase,
                             threads,
