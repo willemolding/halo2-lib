@@ -890,7 +890,7 @@ impl<F: ScalarField> GateChip<F> {
         let two = F::from(2);
         pow_of_two.push(F::one());
         pow_of_two.push(two);
-        for _ in 2..F::NUM_BITS {
+        for _ in 2..(F::NUM_BITS+1) {
             pow_of_two.push(two * pow_of_two.last().unwrap());
         }
         let field_element_cache = (0..1024).map(|i| F::from(i)).collect();
