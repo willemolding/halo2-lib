@@ -886,11 +886,11 @@ impl<F: ScalarField> Default for GateChip<F> {
 impl<F: ScalarField> GateChip<F> {
     /// Returns a new [GateChip] with the given [GateStrategy].
     pub fn new(strategy: GateStrategy) -> Self {
-        let mut pow_of_two = Vec::with_capacity(F::NUM_BITS as usize + 1);
+        let mut pow_of_two = Vec::with_capacity(F::NUM_BITS as usize + 2);
         let two = F::from(2);
         pow_of_two.push(F::one());
         pow_of_two.push(two);
-        for _ in 2..(F::NUM_BITS+1) {
+        for _ in 2..(F::NUM_BITS+2) {
             pow_of_two.push(two * pow_of_two.last().unwrap());
         }
         let field_element_cache = (0..1024).map(|i| F::from(i)).collect();
